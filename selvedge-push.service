@@ -1,0 +1,42 @@
+[Unit]
+Description=Selvedge Matrix Web Push Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/selvedge-push
+# Create /etc/selvedge-push.env with chmod 0600 (root:root) containing
+# VAPID_PRIVATE_KEY, VAPID_SUBJECT, APP_BASE_URL, and any optional overrides.
+EnvironmentFile=/etc/selvedge-push.env
+Restart=on-failure
+RestartSec=5
+
+# Sandboxing & resource hardening
+DynamicUser=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target

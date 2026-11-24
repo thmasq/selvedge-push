@@ -1,0 +1,135 @@
+name: Packages & Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions: {}
+
+jobs:
+  # Builds native glibc binaries and packages Fedora (.rpm) + Debian/Ubuntu (.deb)
+  gnu-packages:
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: |
+          cargo build --release --locked --bin selvedge-push
+          strip target/release/selvedge-push
+
+      - name: Install nFPM
+        uses: goreleaser/nfpm-action@v1
+
+      - name: Package RPM and DEB
+        env:
+          ARCH: ${{ matrix.arch }}
+          BINARY_PATH: target/release/selvedge-push
+        run: |
+          export VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          mkdir -p dist
+          nfpm package --packager rpm --target dist/
+          nfpm package --packager deb --target dist/
+
+      - name: Upload GNU packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-gnu-${{ matrix.arch }}
+          path: dist/*
+
+  # Builds native musl binaries inside Alpine and packages Alpine (.apk)
+  alpine-packages:
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    container:
+      image: rust:1-alpine
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Alpine build tools & nFPM
+        env:
+          NFPM_VERSION: "2.41.1"
+          NFPM_ARCH: ${{ matrix.arch == 'amd64' && 'x86_64' || 'arm64' }}
+          NFPM_SHA256: ${{ matrix.arch == 'amd64' && '<PASTE_X86_64_SHA256>' || '<PASTE_ARM64_SHA256>' }}
+        run: |
+          set -euo pipefail
+          apk add --no-cache musl-dev cmake make gcc g++ jq curl tar
+          TARBALL="nfpm_${NFPM_VERSION}_Linux_${NFPM_ARCH}.tar.gz"
+          curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/${TARBALL}" -o "/tmp/${TARBALL}"
+          echo "${NFPM_SHA256}  /tmp/${TARBALL}" | sha256sum -c -
+          tar -xzf "/tmp/${TARBALL}" -C /usr/local/bin nfpm
+          rm -f "/tmp/${TARBALL}"
+
+      - name: Build musl release binary
+        run: |
+          cargo build --release --locked --bin selvedge-push
+          strip target/release/selvedge-push
+
+      - name: Package APK
+        env:
+          ARCH: ${{ matrix.arch }}
+          BINARY_PATH: target/release/selvedge-push
+        run: |
+          export VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          mkdir -p dist
+          nfpm package --packager apk --target dist/
+
+      - name: Upload Alpine package
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-alpine-${{ matrix.arch }}
+          path: dist/*
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [gnu-packages, alpine-packages]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all packages
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: packages-*
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
