@@ -26,7 +26,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -51,7 +51,7 @@ jobs:
           nfpm package --packager deb --target dist/
 
       - name: Upload GNU packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: packages-gnu-${{ matrix.arch }}
           path: dist/*
@@ -73,7 +73,7 @@ jobs:
       image: rust:1-alpine
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Alpine build tools & nFPM
         env:
@@ -104,7 +104,7 @@ jobs:
           nfpm package --packager apk --target dist/
 
       - name: Upload Alpine package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: packages-alpine-${{ matrix.arch }}
           path: dist/*
@@ -118,7 +118,7 @@ jobs:
 
     steps:
       - name: Download all packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: packages-*
@@ -129,7 +129,7 @@ jobs:
         run: sha256sum * > SHA256SUMS.txt
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true
