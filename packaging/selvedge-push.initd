@@ -1,0 +1,29 @@
+#!/sbin/openrc-run
+
+name="selvedge-push"
+description="Selvedge Matrix Web Push Gateway"
+
+command="/usr/bin/selvedge-push"
+command_user="selvedge-push:selvedge-push"
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
+
+env_file="/etc/selvedge-push.env"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    if [ ! -r "$env_file" ]; then
+        eerror "Missing or unreadable environment file: $env_file"
+        return 1
+    fi
+
+	# Load environment as root before supervise-daemon drops privileges.
+    set -a
+    . "$env_file"
+    set +a
+}
