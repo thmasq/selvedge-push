@@ -1,0 +1,111 @@
+name: Packages & Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions: {}
+
+jobs:
+  # Builds static musl binaries natively on amd64/arm64 and packages .rpm, .deb, and .apk
+  packages:
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+            target: x86_64-unknown-linux-musl
+            nfpm_arch: x86_64
+            nfpm_sha256: b3cf95aa6dabed836d09ad7f0c190a13c74c5b1304db60846f0f702ee407f430
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            target: aarch64-unknown-linux-musl
+            nfpm_arch: arm64
+            nfpm_sha256: 17350a838c8e2c422c6e573ed379b18424565d2de8a2b1cb1b20211976124eb5
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install musl toolchain & nFPM
+        env:
+          NFPM_VERSION: "2.41.1"
+          NFPM_ARCH: ${{ matrix.nfpm_arch }}
+          NFPM_SHA256: ${{ matrix.nfpm_sha256 }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+          TARBALL="nfpm_${NFPM_VERSION}_Linux_${NFPM_ARCH}.tar.gz"
+          curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/${TARBALL}" -o "/tmp/${TARBALL}"
+          echo "${NFPM_SHA256}  /tmp/${TARBALL}" | sha256sum -c -
+          sudo tar -xzf "/tmp/${TARBALL}" -C /usr/local/bin nfpm
+          rm -f "/tmp/${TARBALL}"
+
+      - name: Build static musl release binary
+        env:
+          TARGET: ${{ matrix.target }}
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
+          RUSTFLAGS: "-C target-feature=+crt-static"
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target "${TARGET}" --bin selvedge-push
+          file "target/${TARGET}/release/selvedge-push"
+
+      - name: Package RPM, DEB, and APK
+        env:
+          ARCH: ${{ matrix.arch }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          cp "target/${TARGET}/release/selvedge-push" target/selvedge-push
+          export VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          mkdir -p dist
+          nfpm package --packager rpm --target dist/
+          nfpm package --packager deb --target dist/
+          nfpm package --packager apk --target dist/
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: packages-${{ matrix.arch }}
+          path: dist/*
+
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [packages]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all packages
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: packages-*
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          generate_release_notes: true

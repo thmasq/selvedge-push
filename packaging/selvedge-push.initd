@@ -1,0 +1,43 @@
+#!/sbin/openrc-run
+
+name="selvedge-push"
+description="Selvedge Matrix Web Push Gateway"
+
+command="/usr/bin/selvedge-push"
+command_user="selvedge-push:selvedge-push"
+directory="/"
+umask="0077"
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
+
+rc_ulimit="-c 0 -n 1024"
+
+output_logger="logger -t selvedge-push -p daemon.info"
+error_logger="logger -t selvedge-push -p daemon.err"
+
+env_file="/etc/selvedge-push.env"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    if [ ! -r "$env_file" ]; then
+        eerror "Missing or unreadable environment file: $env_file"
+        return 1
+    fi
+
+    # Parse KEY=VALUE lines without shell evaluation (like systemd EnvironmentFile).
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            ''|'#'*) continue ;;
+            *=*)
+                key="${line%%=*}"
+                val="${line#*=}"
+                export "${key}=${val}"
+                ;;
+        esac
+    done < "$env_file"
+}
