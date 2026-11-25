@@ -4,10 +4,12 @@ use std::time::Duration;
 
 use selvedge_push::AppState;
 use selvedge_push::config::Config;
+use selvedge_push::debounce::DebounceStore;
 use selvedge_push::heartbeat::{HeartbeatStore, spawn_sweeper};
 use selvedge_push::routes::build_router;
 use selvedge_push::webpush::ReqwestPushTransport;
 use selvedge_push::webpush::vapid::{VapidKey, generate_vapid_keypair};
+
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use tracing_subscriber::EnvFilter;
@@ -57,13 +59,41 @@ async fn main() -> ExitCode {
         config.heartbeat_ttl,
         config.max_heartbeats,
     ));
+
+    let debounce = Arc::new(DebounceStore::new(
+        config.max_debounce_batches,
+        config.debounce_max_wait,
+        config.rejected_cache_ttl,
+        config.max_rejected_hashes,
+    ));
+
     let sweeper = spawn_sweeper(heartbeats.clone(), HEARTBEAT_SWEEP_INTERVAL);
+    let rejected_sweeper = tokio::spawn({
+        let debounce = debounce.clone();
+        async move {
+            let mut ticker = tokio::time::interval(HEARTBEAT_SWEEP_INTERVAL);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                let pruned = debounce.sweep_expired_rejected();
+                if pruned > 0 {
+                    tracing::debug!(
+                        pruned,
+                        remaining = debounce.rejected_len(),
+                        "swept expired rejected pushkey hashes"
+                    );
+                }
+            }
+        }
+    });
 
     let state = AppState {
         push_semaphore: Arc::new(Semaphore::new(config.max_concurrent_pushes)),
         config: config.clone(),
         vapid,
         heartbeats,
+        debounce,
         transport,
     };
 
@@ -74,6 +104,7 @@ async fn main() -> ExitCode {
         Err(err) => {
             tracing::error!(addr = %config.bind_addr, error = %err, "failed to bind listener");
             sweeper.abort();
+            rejected_sweeper.abort();
             return ExitCode::FAILURE;
         }
     };
@@ -89,6 +120,7 @@ async fn main() -> ExitCode {
         .await;
 
     sweeper.abort();
+    rejected_sweeper.abort();
 
     if let Err(err) = serve_result {
         tracing::error!(error = %err, "server exited with error");

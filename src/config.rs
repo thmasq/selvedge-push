@@ -50,6 +50,10 @@ pub struct Config {
     pub push_ttl_secs: u32,
     pub outbound_timeout: Duration,
     pub max_concurrent_pushes: usize,
+    pub max_debounce_batches: usize,
+    pub debounce_max_wait: Duration,
+    pub rejected_cache_ttl: Duration,
+    pub max_rejected_hashes: usize,
 }
 
 impl Config {
@@ -138,6 +142,10 @@ impl Config {
         let push_ttl_secs = parse_u32(&lookup, "PUSH_TTL_SECS", 86_400)?;
         let outbound_timeout_secs = parse_positive_u64(&lookup, "OUTBOUND_TIMEOUT_SECS", 5)?;
         let max_concurrent_pushes = parse_positive_usize(&lookup, "MAX_CONCURRENT_PUSHES", 64)?;
+        let max_debounce_batches = parse_positive_usize(&lookup, "MAX_DEBOUNCE_BATCHES", 10_000)?;
+        let debounce_max_wait_secs = parse_positive_u64(&lookup, "DEBOUNCE_MAX_WAIT_SECS", 10)?;
+        let rejected_cache_ttl_secs = parse_positive_u64(&lookup, "REJECTED_CACHE_TTL_SECS", 3600)?;
+        let max_rejected_hashes = parse_positive_usize(&lookup, "MAX_REJECTED_HASHES", 10_000)?;
 
         Ok((
             Self {
@@ -151,6 +159,10 @@ impl Config {
                 push_ttl_secs,
                 outbound_timeout: Duration::from_secs(outbound_timeout_secs),
                 max_concurrent_pushes,
+                max_debounce_batches,
+                debounce_max_wait: Duration::from_secs(debounce_max_wait_secs),
+                rejected_cache_ttl: Duration::from_secs(rejected_cache_ttl_secs),
+                max_rejected_hashes,
             },
             vapid_private_key,
         ))
