@@ -11,6 +11,10 @@ use crate::ssrf::ValidatedPushUrl;
 
 const ON_DEMAND_SWEEP_COOLDOWN: Duration = Duration::from_secs(5);
 
+/// Maximum multiplier applied to a batch's requested window before it is
+/// forced to flush under continuous activity (still bounded by `self.max_wait`).
+const BATCH_MAX_WAIT_MULTIPLIER: u32 = 3;
+
 /// Grouping key for debounced notifications: `(sha256(pushkey), room_id)`.
 pub type DebounceKey = (PushkeyHash, String);
 
@@ -100,9 +104,10 @@ impl DebounceStore {
     /// Inserts or updates a pending batch for `(device.pushkey_hash, room_id)`.
     ///
     /// `window` is clamped to `self.max_wait`, and the rolling deadline is
-    /// capped at `first_seen + self.max_wait`. Consecutive retries with the
-    /// same `event_id` refresh device metadata without inflating `count` or
-    /// extending the deadline.
+    /// capped at `first_seen + min(clamped_window * 3, self.max_wait)` so short
+    /// user-configured windows don't starve when `self.max_wait` is large.
+    /// Consecutive retries with the same `event_id` refresh device metadata
+    /// without inflating `count` or extending the deadline.
     pub fn enqueue(
         &self,
         device: PendingDevice,
@@ -112,6 +117,9 @@ impl DebounceStore {
     ) -> EnqueueResult {
         let now = Instant::now();
         let clamped_window = window.min(self.max_wait);
+        let batch_max_wait = clamped_window
+            .saturating_mul(BATCH_MAX_WAIT_MULTIPLIER)
+            .min(self.max_wait);
         let key: DebounceKey = (device.pushkey_hash, room_id.clone());
 
         if let Some(mut existing) = self.batches.get_mut(&key) {
@@ -121,7 +129,7 @@ impl DebounceStore {
                 event_id,
                 now,
                 clamped_window,
-                self.max_wait,
+                batch_max_wait,
             );
             return EnqueueResult::Updated;
         }
@@ -140,7 +148,7 @@ impl DebounceStore {
                     event_id,
                     now,
                     clamped_window,
-                    self.max_wait,
+                    batch_max_wait,
                 );
                 EnqueueResult::Updated
             }
@@ -321,13 +329,13 @@ fn update_batch(
     event_id: String,
     now: Instant,
     clamped_window: Duration,
-    max_wait: Duration,
+    batch_max_wait: Duration,
 ) {
     existing.device = device;
     if existing.latest_event_id != event_id {
         existing.latest_event_id = event_id;
         existing.count = existing.count.saturating_add(1);
-        let max_deadline = existing.first_seen + max_wait;
+        let max_deadline = existing.first_seen + batch_max_wait;
         existing.deadline = (now + clamped_window).min(max_deadline);
     }
 }
@@ -382,7 +390,7 @@ mod tests {
             PollBatch::SleepUntil(_)
         ));
 
-        // Keep pushing every 2s until hitting the 10s max_wait cap.
+        // Keep pushing every 2s until hitting the per-batch max_wait cap (3s * 3 = 9s).
         for i in 3..=6 {
             tokio::time::advance(Duration::from_secs(2)).await;
             let _ = store.enqueue(
@@ -392,13 +400,55 @@ mod tests {
                 Duration::from_secs(3),
             );
         }
-        // We are now at t=11s >= max_wait (10s), so it must flush immediately.
+        // We are now at t=11s >= 9s, so it must flush immediately.
         let PollBatch::Ready(batch) = store.poll_ready(&key, batch_id) else {
             panic!("expected Ready after max_wait");
         };
         assert_eq!(batch.count, 6);
         assert_eq!(batch.latest_event_id, "$e6");
         assert_eq!(store.pending_len(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn short_window_does_not_starve_with_large_global_max_wait() {
+        let store =
+            DebounceStore::new(10, Duration::from_secs(1800), Duration::from_secs(3600), 10);
+        let pushkey = "https://fcm.googleapis.com/fcm/send/d1";
+        let key = (hash_pushkey(pushkey), "!room:example.org".to_owned());
+
+        let EnqueueResult::SpawnFlusher { batch_id } = store.enqueue(
+            test_device(pushkey),
+            "!room:example.org".into(),
+            "$e1".into(),
+            Duration::from_secs(15),
+        ) else {
+            panic!("expected SpawnFlusher");
+        };
+
+        // Keep sending every 10s; a 15s window caps at 45s (not 1800s).
+        for i in 2..=5 {
+            tokio::time::advance(Duration::from_secs(10)).await;
+            let _ = store.enqueue(
+                test_device(pushkey),
+                "!room:example.org".into(),
+                format!("$e{i}"),
+                Duration::from_secs(15),
+            );
+        }
+
+        // At t=40s, still waiting until t=45s.
+        assert!(matches!(
+            store.poll_ready(&key, batch_id),
+            PollBatch::SleepUntil(_)
+        ));
+
+        // At t=45s, must flush.
+        tokio::time::advance(Duration::from_secs(5)).await;
+        let PollBatch::Ready(batch) = store.poll_ready(&key, batch_id) else {
+            panic!("expected Ready at 45s per-batch cap");
+        };
+        assert_eq!(batch.count, 5);
+        assert_eq!(batch.latest_event_id, "$e5");
     }
 
     #[tokio::test(start_paused = true)]

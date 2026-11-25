@@ -276,8 +276,8 @@ mod tests {
             end_min: 7 * 60,
             tz_offset_min: -180,
         };
-        assert!(!overnight.is_active_at_utc_minute(0 * 60 + 59)); // 21:59 local
-        assert!(overnight.is_active_at_utc_minute(1 * 60)); // 22:00 local
+        assert!(!overnight.is_active_at_utc_minute(59)); // 21:59 local (00:59 UTC)
+        assert!(overnight.is_active_at_utc_minute(60)); // 22:00 local (01:00 UTC)
         assert!(overnight.is_active_at_utc_minute(9 * 60 + 59)); // 06:59 local
         assert!(!overnight.is_active_at_utc_minute(10 * 60)); // 07:00 local
 
